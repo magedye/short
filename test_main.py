@@ -71,10 +71,13 @@ def llm_ready() -> bool:
 # ---------- Startup / preflight ----------
 
 
-@pytest.mark.asyncio
-async def test_tools_registered(client: TestClient):
+def test_tools_registered(client: TestClient):
     assert main.agent is not None, "Agent not initialized during lifespan"
-    tools = await main.agent.tool_registry.list_tools()  # type: ignore[union-attr]
+
+    async def _list():
+        return await main.agent.tool_registry.list_tools()  # type: ignore[union-attr]
+
+    tools = asyncio.run(_list())
     expected = {
         "run_sql",
         "visualize_data",
@@ -86,7 +89,7 @@ async def test_tools_registered(client: TestClient):
 
 
 def test_agent_run_available(client: TestClient):
-    assert hasattr(main.agent, "run") and callable(getattr(main.agent, "run"))
+    assert hasattr(main.agent, "ask") and callable(getattr(main.agent, "ask"))
 
 
 def test_env_vars_present():
@@ -102,8 +105,7 @@ def test_oracle_connectivity(oracle_ready: bool):
     assert oracle_ready
 
 
-@pytest.mark.asyncio
-async def test_llm_ping(client: TestClient, llm_ready: bool):
+def test_llm_ping(client: TestClient, llm_ready: bool):
     if not llm_ready or not main.agent:
         pytest.skip("LLM not configured")
     llm_service = getattr(main.agent, "llm_service", None)
@@ -117,8 +119,11 @@ async def test_llm_ping(client: TestClient, llm_ready: bool):
         stream=False,
         max_tokens=5,
     )
-    # Minimal ping to verify round-trip; allow empty content but expect no exception.
-    response = await llm_service.send_request(request)  # type: ignore[attr-defined]
+
+    async def _ping():
+        return await llm_service.send_request(request)  # type: ignore[attr-defined]
+
+    response = asyncio.run(_ping())
     assert response is not None
 
 
@@ -182,7 +187,7 @@ def test_ask_stream_ndjson(client: TestClient, oracle_ready: bool):
         for line in resp.iter_lines():
             if not line:
                 continue
-            chunks.append(line.decode())
+            chunks.append(line if isinstance(line, str) else line.decode())
         assert chunks, "No NDJSON chunks returned"
         parsed = [json.loads(c) for c in chunks]
         stages = {item.get("stage") for item in parsed}

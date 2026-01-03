@@ -29,6 +29,7 @@ import chromadb
 from typing import List, Tuple, Optional
 from datetime import datetime
 from pathlib import Path
+from dotenv import load_dotenv
 
 # ==================================================================================
 # 1. LOGGING SETUP
@@ -43,6 +44,9 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("TrainingScript")
+
+# Load environment from .env if present
+load_dotenv()
 
 # ==================================================================================
 # 2. ENVIRONMENT VALIDATION

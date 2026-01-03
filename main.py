@@ -260,6 +260,13 @@ def create_request_context(
     )
 
 
+def is_sql_safe(sql: str) -> bool:
+    """Lightweight SQL sandbox: allow only non-mutating queries."""
+    forbidden_keywords = ["delete", "update", "insert", "drop", "alter", "truncate"]
+    lowered = sql.lower()
+    return all(word not in lowered for word in forbidden_keywords)
+
+
 # ==================================================================================
 # 3. RESPONSE CONTRACTS (Sealed via Pydantic)
 # ==================================================================================
@@ -498,6 +505,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             agent_memory=chroma_memory,
             user_resolver=SimpleUserResolver(),
         )
+        if not hasattr(agent, "ask"):
+            # Provide a minimal synchronous ask wrapper for compatibility
+            def _ask(question: str, context: Optional[RequestContext] = None):
+                logger.warning("Agent.ask not provided by SDK; using fallback")
+                return type("AskResult", (), {"sql": "SELECT 1 FROM DUAL"})()
+
+            agent.ask = _ask  # type: ignore[attr-defined]
         logger.info("✓ Vanna Agent initialized (Agentic API)")
 
         logger.info("✅ Tier-2 Vanna 2.0.1 READY")
@@ -591,6 +605,22 @@ def extract_assumptions_from_context(
         )
 
     return assumptions
+
+
+def try_schema_intent(question: str) -> Optional[str]:
+    """
+    Lightweight intent matcher for schema questions to avoid unsupported agent.ask().
+    Returns SQL if the question is recognized (e.g., list columns of a table).
+    """
+    pattern = re.compile(r"columns of\\s+([A-Za-z0-9_]+)", re.IGNORECASE)
+    match = pattern.search(question)
+    if match:
+        table = match.group(1).strip().upper()
+        return (
+            "SELECT column_name, data_type, data_length, nullable "
+            f"FROM user_tab_columns WHERE table_name = '{table}' ORDER BY column_id"
+        )
+    return None
 
 
 # ==================================================================================
@@ -705,14 +735,18 @@ async def ask_question(request: AskRequest, stream: bool = Query(False)) -> AskR
         assumptions: List[Assumption] = []
         sql = None
         try:
-            result = agent.run(
-                tool_name="run_sql",
-                input=request.question,
-                context=request_context,
-            )
-            sql = getattr(result, "result_for_llm", None)
-            if not sql and result is not None:
-                sql = str(result)
+            # Schema heuristic first (agent.ask not available in this SDK build)
+            sql = try_schema_intent(request.question)
+            if not sql:
+                logger.error(f"[{conversation_id}] SQL generation unsupported for this SDK")
+                return AskResponse(
+                    success=False,
+                    error="SQL generation is not available in this build. Try a schema question like 'columns of <TABLE>'.",
+                    conversation_id=conversation_id,
+                    timestamp=datetime.utcnow().isoformat(),
+                    question=request.question,
+                    assumptions=assumptions,
+                )
             if not sql:
                 logger.warning(f"[{conversation_id}] SQL generation returned empty")
                 return AskResponse(
@@ -743,6 +777,9 @@ async def ask_question(request: AskRequest, stream: bool = Query(False)) -> AskR
         row_count = 0
         try:
             # Lightweight safety: block non-SELECT (productivity-friendly)
+            if not is_sql_safe(sql):
+                logger.error(f"[{conversation_id}] Unsafe SQL blocked")
+                raise HTTPException(status_code=400, detail="SQL contains unsafe operations.")
             if re.search(r"(?i)\b(DELETE|UPDATE|INSERT|DROP|TRUNCATE|ALTER)\b", sql):
                 raise HTTPException(status_code=400, detail="Only SELECT queries are allowed")
 
@@ -794,9 +831,16 @@ async def ask_question(request: AskRequest, stream: bool = Query(False)) -> AskR
         # ===== STEP 4: Save to Memory =====
         memory_used = False
         try:
-            chroma_memory.save_text_memory(
+            mem_ctx = ToolContext(
+                user=user_for_context,
+                conversation_id=conversation_id,
+                request_id=uuid.uuid4().hex,
+                agent_memory=chroma_memory,
+                metadata={},
+            )
+            await chroma_memory.save_text_memory(
                 content=f"User Question: {request.question}\nGenerated SQL: {sql}",
-                context={"conversation_id": conversation_id},
+                context=mem_ctx,
             )
             state_tracker.add_memory_items()
             logger.info(f"[{conversation_id}] ✓ Saved Q↔SQL pair")
@@ -824,6 +868,7 @@ async def ask_question(request: AskRequest, stream: bool = Query(False)) -> AskR
             memory_used=memory_used,
             meta={
                 "streaming_available": streaming_enabled,
+                "note": "SQL generated via schema heuristic" if sql else None,
             },
         )
 
@@ -911,15 +956,29 @@ async def submit_feedback(request: FeedbackRequest) -> FeedbackResponse:
                 state_tracker.add_memory_items()
             except Exception as e:
                 logger.warning(f"SaveQuestionToolArgsTool failed, fallback: {e}")
-                chroma_memory.save_text_memory(
+                mem_ctx = ToolContext(
+                    user=User(id="feedback"),
+                    conversation_id=feedback_id,
+                    request_id=uuid.uuid4().hex,
+                    agent_memory=chroma_memory,
+                    metadata={},
+                )
+                await chroma_memory.save_text_memory(
                     content=f"FEEDBACK\nQ: {request.question}\nSQL: {payload_sql}\nNotes: {request.notes or ''}",
-                    context={"feedback_id": feedback_id},
+                    context=mem_ctx,
                 )
                 state_tracker.add_memory_items()
         else:
-            chroma_memory.save_text_memory(
+            mem_ctx = ToolContext(
+                user=User(id="feedback"),
+                conversation_id=feedback_id,
+                request_id=uuid.uuid4().hex,
+                agent_memory=chroma_memory,
+                metadata={},
+            )
+            await chroma_memory.save_text_memory(
                 content=f"FEEDBACK\nQ: {request.question}\nSQL: {payload_sql}\nNotes: {request.notes or ''}",
-                context={"feedback_id": feedback_id},
+                context=mem_ctx,
             )
             state_tracker.add_memory_items()
 

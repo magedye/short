@@ -1,0 +1,58 @@
+Component,Backend Field/Function,UI Handler,Status,Missing,Impact,Priority
+"Endpoint: /health",status,get() ✅,Implemented,None,None,N/A
+"Endpoint: /health",components,iterate() ✅,Implemented,None,None,N/A
+"Endpoint: /health",timestamp,display ✅,Implemented,None,None,N/A
+"Endpoint: /state",memory_items_count,metric() ✅,Implemented,None,None,N/A
+"Endpoint: /state",trained_tables,list() ✅,Implemented,None,None,N/A
+"Endpoint: /state",agent_ready,status() ✅,Implemented,None,None,N/A
+"Endpoint: /state",llm_connected,status() ✅,Implemented,None,None,N/A
+"Endpoint: /state",db_connected,status() ✅,Implemented,None,None,N/A
+"Endpoint: /state",timestamp,display ✅,Implemented,None,None,N/A
+"Endpoint: /ask",success,boolean ✅,Implemented,None,None,N/A
+"Endpoint: /ask",error,display ✅,Implemented,None,None,N/A
+"Endpoint: /ask",conversation_id,hidden ✅,Implemented,None,None,N/A
+"Endpoint: /ask",timestamp,hidden ✅,Implemented,None,None,N/A
+"Endpoint: /ask",question,display ✅,Implemented,None,None,N/A
+"Endpoint: /ask",assumptions,NOT DISPLAYED ❌,Missing,Display assumptions list,User sees no reasoning,P1-CRITICAL
+"Endpoint: /ask",sql,code block ✅,Implemented,None,None,N/A
+"Endpoint: /ask",rows,dataframe ✅,Implemented,None,None,N/A
+"Endpoint: /ask",row_count,badge ✅,Implemented,None,None,N/A
+"Endpoint: /ask",chart_code,text only ❌,Display only,Execute code + render,No visualizations,P2-HIGH
+"Endpoint: /ask",memory_used,badge ✅,Partial,Show memory stats,Limited insight,P3-MEDIUM
+"Endpoint: /ask",meta,ignored ❌,Missing,Display meta field,System info lost,P3-MEDIUM
+"Endpoint: /train",success,get() ✅,Implemented,None,None,N/A
+"Endpoint: /train",trained,list() ✅,Implemented,None,None,N/A
+"Endpoint: /train",failed,list() ✅,Implemented,None,None,N/A
+"Endpoint: /train",timestamp,display ✅,Implemented,None,None,N/A
+"Endpoint: /feedback",success,get() ✅,Implemented,None,None,N/A
+"Endpoint: /feedback",message,display ✅,Implemented,None,None,N/A
+"Endpoint: /feedback",timestamp,display ✅,Implemented,None,None,N/A
+"Request: /ask",question,sent ✅,Correct,None,None,N/A
+"Request: /ask",context,sent ✅,Correct,None,None,N/A
+"Request: /feedback",question,sent ✅,Correct,None,None,N/A
+"Request: /feedback",sql_generated,sent ✅,Correct,None,None,N/A
+"Request: /feedback",sql_corrected,sent ✅,Correct,None,None,N/A
+"Request: /feedback",is_correct,sent ✅,Correct,None,None,N/A
+"Request: /feedback",notes,sent ✅,Correct,None,None,N/A
+"Config: LLM",OPENAI_API_KEY,in backend ✅,Correct,None,None,N/A
+"Config: LLM",OPENAI_BASE_URL,in backend ✅,Correct,None,None,N/A
+"Config: LLM",OPENAI_MODEL,in backend ✅,Correct,None,None,N/A
+"Config: DB",ORACLE_USER,in backend ✅,Correct,None,None,N/A
+"Config: DB",ORACLE_PASSWORD,in backend ✅,Correct,None,None,N/A
+"Config: DB",ORACLE_DSN,in backend ✅,Correct,None,None,N/A
+"Config: Memory",CHROMA_PATH,in backend ✅,Correct,None,None,N/A
+"Config: Memory",CHROMA_COLLECTION,in backend ✅,Correct,None,None,N/A
+"Config: System",BACKEND_SERVICE_URL,in UI ✅,Correct,None,None,N/A
+"Config: System",TIER2_ACCESS_KEY,in UI ✅,Correct,None,None,N/A
+"Config: System",LOG_LEVEL,in backend ✅,Correct,None,None,N/A
+"Config: System",MAX_ROWS,in backend ✅,Correct,None,None,N/A
+"Config: System",STREAMING_MODE,in backend ❌,Not used in UI,Implement streaming requests,Slow on large data,P2-HIGH
+"Feature: Timeout",ask_question() signature,DEFAULT_TIMEOUT used ❌,Ignored,Use timeout parameter,Requests can't timeout on user request,P2-HIGH
+"Feature: Timeout",sidebar input,defined but unused ❌,Ignored,Pass timeout to ask_question(),User setting ignored,P2-HIGH
+"Feature: Streaming",main.py support,No UI support ❌,Missing,Implement stream=True requests,Long waits for large queries,P2-HIGH
+"Feature: Streaming",NDJSON parsing,Not implemented ❌,Missing,Parse per-line JSON,No stage-by-stage updates,P2-HIGH
+"Error Handling",HTTP errors,caught ✅,Good,None,None,N/A
+"Error Handling",Timeouts,caught ✅,Good,None,None,N/A
+"Error Handling",Connection errors,caught ✅,Good,None,None,N/A
+"Auth",API Key header,supported ✅,Good,None,None,N/A
+"Auth",Optional mode,default no-auth ✅,Good,None,None,N/A

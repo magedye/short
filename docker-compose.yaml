@@ -1,0 +1,59 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: easydata_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - ./vanna_memory:/app/vanna_memory
+    command: >
+      uvicorn main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+      --log-level info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v2/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - easydata_net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: easydata_ui
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      - BACKEND_SERVICE_URL=http://easydata_backend:8000
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+    command: >
+      streamlit run ui.py
+      --server.port=8501
+      --server.address=0.0.0.0
+      --server.runOnSave=true
+    networks:
+      - easydata_net
+
+networks:
+  easydata_net:
+    driver: bridge

@@ -1,0 +1,56 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: easydata_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "7788:7788"
+    volumes:
+      # 1. ربط الكود مباشرة (أي تعديل في main.py سيظهر فوراً)
+      - .:/app 
+      # 2. الحفاظ على بيانات التدريب
+      - ./vanna_memory:/app/vanna_memory
+    # إضافة خيار التحديث التلقائي إذا كنت تستخدم Uvicorn داخل main.py
+    command: >
+      python main.py
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7788/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - easydata_net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: easydata_ui
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      - BACKEND_SERVICE_URL=http://backend:7788
+    ports:
+      - "8501:8501"
+    volumes:
+      # ربط ملفات الواجهة (أي تعديل في ui.py سيظهر فور حفظ الملف)
+      - .:/app
+    command: >
+      streamlit run ui.py
+      --server.port=8501
+      --server.address=0.0.0.0
+      --server.runOnSave=true
+    networks:
+      - easydata_net
+
+networks:
+  easydata_net:
+    driver: bridge

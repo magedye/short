@@ -1,0 +1,36 @@
+# ==============================================================================
+# EasyData Fortress - OPTIMIZED BACKEND (Minimal & Strict)
+# ==============================================================================
+
+# --- Core Runtime ---
+python-dotenv==1.0.1
+pydantic==2.10.3
+
+# --- Backend Server ---
+fastapi==0.115.6
+uvicorn[standard]==0.32.0
+
+# --- Data Processing (Safety Locked) ---
+pandas==2.2.3
+# Numpy restricted to prevent compatibility breakages with Scikit/Chroma
+numpy>=1.26,<2.0
+
+# --- Database ---
+oracledb==2.5.0
+
+# --- AI Core & Memory ---
+vanna==2.0.1
+openai==0.28.1
+# Keep strict versioning for stability. 0.5.x is NEWER than 0.4.x
+chromadb==0.5.23
+
+# --- Essential Utils ---
+# Required by Vanna for SQL parsing (often missed in minimal setups)
+sqlparse==0.5.1
+httpx==0.28.1
+
+# ==============================================================================
+# OPTIONAL (Uncomment only if needed)
+# ==============================================================================
+# ujson==5.10.0            # For slightly faster JSON serialization
+# python-jose==3.3.0       # Only if implementing REAL JWT validation

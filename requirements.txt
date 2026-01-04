@@ -34,3 +34,4 @@ httpx==0.28.1
 # ==============================================================================
 # ujson==5.10.0            # For slightly faster JSON serialization
 # python-jose==3.3.0       # Only if implementing REAL JWT validation
+sqlglot

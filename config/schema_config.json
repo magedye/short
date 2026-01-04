@@ -1,0 +1,33 @@
+{
+  "database_type": "generic_sql",
+  "tables": {
+    "TABLE_A": {
+      "description": "Primary business entity",
+      "columns": [
+        { "name": "ID", "type": "INTEGER", "key": "primary" },
+        { "name": "VALUE", "type": "NUMERIC" },
+        { "name": "CREATED_AT", "type": "DATE" },
+        {
+          "name": "REF_ID",
+          "type": "INTEGER",
+          "key": "foreign",
+          "references": "TABLE_B.ID"
+        }
+      ]
+    },
+    "TABLE_B": {
+      "description": "Reference entity",
+      "columns": [
+        { "name": "ID", "type": "INTEGER", "key": "primary" },
+        { "name": "NAME", "type": "VARCHAR" }
+      ]
+    }
+  },
+  "relationships": [
+    {
+      "from": "TABLE_A.REF_ID",
+      "to": "TABLE_B.ID",
+      "type": "foreign_key"
+    }
+  ]
+}

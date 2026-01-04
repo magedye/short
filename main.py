@@ -86,12 +86,24 @@ from vanna.tools.agent_memory import (
     SaveTextMemoryTool,
     SearchSavedCorrectToolUsesTool,
 )
+from vanna.legacy.openai import OpenAI_Chat
+from vanna.legacy.chromadb import ChromaDB_VectorStore
+from config.metadata_loader import metadata
+from sqlglot_name_mapper import (
+    SQLGatekeeper,
+    ValidationError,
+    get_allowed_tables_from_memory,
+)
+from prompts.schema_prompt_builder import PROMPT_SYSTEM
+from trainers.auto_semantic_trainer import generate_training_pairs
 
 # ==================================================================================
 # INITIALIZATION
 # ==================================================================================
 
 load_dotenv()
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+os.environ["CHROMA_TELEMETRY"] = "False"
 
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO")),
@@ -106,6 +118,9 @@ chroma_memory: Optional[ChromaAgentMemory] = None
 streaming_enabled: bool = os.getenv("STREAMING_MODE", "false").lower() == "true"
 save_q_tool_global: Optional[SaveQuestionToolArgsTool] = None
 viz_tool_global: Optional[VisualizeDataTool] = None
+vn: Optional["MyVanna"] = None
+gatekeeper: Optional[SQLGatekeeper] = None
+AUTO_TRAIN_MARKER_TYPE = "auto_semantic_training"
 
 
 # ==================================================================================
@@ -265,6 +280,76 @@ def is_sql_safe(sql: str) -> bool:
     forbidden_keywords = ["delete", "update", "insert", "drop", "alter", "truncate"]
     lowered = sql.lower()
     return all(word not in lowered for word in forbidden_keywords)
+
+
+def is_sql_question(question: str) -> bool:
+    """Heuristic to decide if the question expects a SQL answer."""
+    sql_keywords = [
+        "select",
+        "list",
+        "show",
+        "get",
+        "fetch",
+        "اعرض",
+        "احضر",
+        "هات",
+        "قائمة",
+        "سجل",
+    ]
+    q = question.lower()
+    return any(k in q for k in sql_keywords)
+
+
+def is_schema_question(question: str) -> bool:
+    """Detect schema/describe questions to keep them off the SQL generation path."""
+    keywords = ["أعمدة", "columns", "schema", "describe", "structure"]
+    q = question.lower()
+    return any(k in q for k in keywords)
+
+
+def generate_safe_sql(question: str, context: RequestContext) -> Optional[str]:
+    """
+    Hybrid SQL generation:
+    1) Try agentic path (agent.ask) if available.
+    2) Fallback to legacy vn.generate_sql() with injected prompt.
+    Applies gatekeeper policy and strips dummy SQL.
+    """
+    if gatekeeper is None:
+        return None
+
+    # Agentic path (optional)
+    if agent and hasattr(agent, "ask") and callable(getattr(agent, "ask")):
+        try:
+            res = agent.ask(question=question, context=context)
+            sql = getattr(res, "sql", None)
+            if isinstance(sql, str) and sql.strip():
+                clean_sql = sql.strip().rstrip(";")
+                try:
+                    return gatekeeper.validate(clean_sql)
+                except ValidationError as e:
+                    logger.warning(f"Agentic SQL failed policy: {e}")
+        except Exception as e:
+            logger.debug(f"Agentic skipped: {e}")
+
+    # Legacy path (Vanna 2.0.1 returns str)
+    if vn:
+        try:
+            vn.prompt = PROMPT_SYSTEM
+            legacy_sql = vn.generate_sql(question)
+            if not isinstance(legacy_sql, str):
+                logger.error(f"Unexpected legacy return type: {type(legacy_sql)}")
+                return None
+            clean_sql = legacy_sql.strip()
+            if not clean_sql:
+                return None
+            clean_sql = clean_sql.rstrip(";")
+            return gatekeeper.validate(clean_sql)
+        except ValidationError as e:
+            logger.error(f"Legacy SQL rejected by gatekeeper: {e}")
+        except Exception as e:
+            logger.error(f"Legacy path failed: {e}")
+
+    return None
 
 
 # ==================================================================================
@@ -427,6 +512,69 @@ state_tracker = StateTracker()
 
 
 # ==================================================================================
+# AUTO SEMANTIC TRAINING (memory-driven)
+# ==================================================================================
+
+
+def run_auto_semantic_training(vn_instance: "MyVanna") -> None:
+    """
+    Generate minimal semantic training examples from metadata and store them once.
+    Idempotent: skips tables already marked in memory.
+    """
+    # Tables that already have SQL examples in memory (avoid retraining)
+    trained_tables = get_allowed_tables_from_memory(vn_instance)
+
+    pairs = generate_training_pairs()
+    trained_now = set()
+
+    for p in pairs:
+        sql = p.get("sql")
+        question = p.get("question")
+        if not sql or not question:
+            continue
+
+        # Extract table name heuristically from SQL (FROM <TABLE>)
+        table = None
+        tokens = sql.split()
+        if "FROM" in [t.upper() for t in tokens]:
+            try:
+                idx = [t.upper() for t in tokens].index("FROM")
+                table = tokens[idx + 1].strip()
+            except Exception:
+                table = None
+
+        if table and table in trained_tables:
+            continue
+
+        try:
+            vn_instance.train(question=question, sql=sql)
+            trained_now.add(table or "")
+        except Exception:
+            continue
+
+    if trained_now:
+        logger.info(
+            f"🧠 Auto semantic training completed for: "
+            f"{', '.join(sorted(t for t in trained_now if t))}"
+        )
+    else:
+        logger.info("🧠 Auto semantic training skipped (already done or no pairs)")
+
+
+# ==================================================================================
+# LEGACY FALLBACK (OpenAI + ChromaDB)
+# ==================================================================================
+
+
+class MyVanna(ChromaDB_VectorStore, OpenAI_Chat):
+    """Legacy Vanna with OpenAI-compatible LLM and ChromaDB vector store."""
+
+    def __init__(self, config=None):
+        ChromaDB_VectorStore.__init__(self, config=config)
+        OpenAI_Chat.__init__(self, config=config)
+
+
+# ==================================================================================
 # 5. FASTAPI APP & LIFESPAN
 # ==================================================================================
 
@@ -439,7 +587,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         logger.info("🔄 Tier-2 Vanna 2.0.1 startup...")
 
-        global agent, oracle_runner, chroma_memory, save_q_tool_global, viz_tool_global
+        global agent, oracle_runner, chroma_memory, save_q_tool_global, viz_tool_global, vn
 
         # Initialize Oracle Runner
         oracle_runner = OracleRunner(
@@ -450,21 +598,47 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         logger.info("✓ Oracle runner initialized")
 
+        # Shared config for legacy + agentic
+        config = {
+            "api_key": os.getenv("OPENAI_API_KEY"),
+            "model": os.getenv("OPENAI_MODEL", "gpt-4-turbo"),
+            "base_url": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            "path": os.getenv("CHROMA_PATH", "./vanna_memory"),
+            "collection_name": os.getenv("CHROMA_COLLECTION", "tier2_vanna"),
+        }
+
         # Initialize LLM Service
         llm = OpenAILlmService(
-            api_key=os.getenv("OPENAI_API_KEY"),
-            base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-            model=os.getenv("OPENAI_MODEL", "gpt-4-turbo"),
+            api_key=config["api_key"],
+            base_url=config["base_url"],
+            model=config["model"],
         )
         logger.info(f"✓ LLM initialized: {os.getenv('OPENAI_MODEL', 'gpt-4-turbo')}")
 
         # Initialize ChromaDB Memory
         chroma_memory = ChromaAgentMemory(
-            collection_name=os.getenv("CHROMA_COLLECTION", "tier2_vanna"),
-            persist_directory=os.getenv("CHROMA_PATH", "./vanna_memory"),
+            collection_name=config["collection_name"],
+            persist_directory=config["path"],
         )
         logger.info(f"✓ Memory initialized: {os.getenv('CHROMA_PATH', './vanna_memory')}")
         state_tracker.set_memory(chroma_memory)
+
+        # Initialize legacy Vanna (fallback)
+        vn = MyVanna(config=config)
+        vn.run_sql = lambda sql: oracle_runner.run_sql(sql)  # type: ignore[assignment]
+        logger.info("✓ Legacy Vanna initialized (fallback)")
+        # Gatekeeper depends on vn (memory-based ACL)
+        global gatekeeper
+        gatekeeper = SQLGatekeeper(vn)
+
+        # Auto semantic training (idempotent) — disabled by default
+        if os.getenv("AUTO_TRAIN_ENABLED", "false").lower() == "true":
+            try:
+                run_auto_semantic_training(vn)
+            except Exception as e:
+                logger.warning(f"Auto semantic training skipped: {e}")
+        else:
+            logger.info("🧠 Auto semantic training disabled (set AUTO_TRAIN_ENABLED=true to enable)")
 
         # Initialize ToolRegistry & register official tools
         tool_registry = ToolRegistry()
@@ -498,20 +672,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         save_q_tool_global = save_q_tool
         viz_tool_global = viz_tool
 
-        # Initialize Agent with AgentConfig
+        # Initialize Agent with AgentConfig (no fallback wiring)
         agent = Agent(
             llm_service=llm,
             tool_registry=tool_registry,
             agent_memory=chroma_memory,
             user_resolver=SimpleUserResolver(),
         )
-        if not hasattr(agent, "ask"):
-            # Provide a minimal synchronous ask wrapper for compatibility
-            def _ask(question: str, context: Optional[RequestContext] = None):
-                logger.warning("Agent.ask not provided by SDK; using fallback")
-                return type("AskResult", (), {"sql": "SELECT 1 FROM DUAL"})()
-
-            agent.ask = _ask  # type: ignore[attr-defined]
         logger.info("✓ Vanna Agent initialized (Agentic API)")
 
         logger.info("✅ Tier-2 Vanna 2.0.1 READY")
@@ -605,22 +772,6 @@ def extract_assumptions_from_context(
         )
 
     return assumptions
-
-
-def try_schema_intent(question: str) -> Optional[str]:
-    """
-    Lightweight intent matcher for schema questions to avoid unsupported agent.ask().
-    Returns SQL if the question is recognized (e.g., list columns of a table).
-    """
-    pattern = re.compile(r"columns of\\s+([A-Za-z0-9_]+)", re.IGNORECASE)
-    match = pattern.search(question)
-    if match:
-        table = match.group(1).strip().upper()
-        return (
-            "SELECT column_name, data_type, data_length, nullable "
-            f"FROM user_tab_columns WHERE table_name = '{table}' ORDER BY column_id"
-        )
-    return None
 
 
 # ==================================================================================
@@ -728,25 +879,34 @@ async def ask_question(request: AskRequest, stream: bool = Query(False)) -> AskR
         request_context.metadata.get("user_id")
     )
 
+    # Early rejection for non-SQL questions
+    question_text = request.question.strip()
+    if not is_sql_question(question_text):
+        logger.warning(f"[{conversation_id}] Non-SQL question rejected")
+        return AskResponse(
+            success=False,
+            error="This question is informational and not answerable via SQL.",
+            conversation_id=conversation_id,
+            timestamp=datetime.utcnow().isoformat(),
+            question=request.question,
+        )
+    if is_schema_question(question_text):
+        logger.warning(f"[{conversation_id}] Schema question rejected from SQL path")
+        return AskResponse(
+            success=False,
+            error="Schema questions are answered via trained metadata only.",
+            conversation_id=conversation_id,
+            timestamp=datetime.utcnow().isoformat(),
+            question=request.question,
+        )
+
     try:
         logger.info(f"[{conversation_id}] Q: {request.question}")
 
-        # ===== STEP 1: Generate SQL =====
+        # ===== STEP 1: Generate SQL (hybrid: Agentic -> Legacy) =====
         assumptions: List[Assumption] = []
-        sql = None
         try:
-            # Schema heuristic first (agent.ask not available in this SDK build)
-            sql = try_schema_intent(request.question)
-            if not sql:
-                logger.error(f"[{conversation_id}] SQL generation unsupported for this SDK")
-                return AskResponse(
-                    success=False,
-                    error="SQL generation is not available in this build. Try a schema question like 'columns of <TABLE>'.",
-                    conversation_id=conversation_id,
-                    timestamp=datetime.utcnow().isoformat(),
-                    question=request.question,
-                    assumptions=assumptions,
-                )
+            sql = generate_safe_sql(request.question, request_context)
             if not sql:
                 logger.warning(f"[{conversation_id}] SQL generation returned empty")
                 return AskResponse(
@@ -758,9 +918,7 @@ async def ask_question(request: AskRequest, stream: bool = Query(False)) -> AskR
                     assumptions=assumptions,
                 )
             logger.info(f"[{conversation_id}] Generated: {sql[:80]}...")
-            # Update assumptions with generated SQL
             assumptions = extract_assumptions_from_context(request.question, sql)
-
         except Exception as e:
             logger.error(f"[{conversation_id}] SQL generation error: {e}")
             return AskResponse(
@@ -1090,8 +1248,18 @@ async def root():
             "state": "GET /api/v2/state - Get agent state",
             "health": "GET /api/v2/health - Health check",
             "docs": "GET /docs - Swagger UI",
+            "tables": "GET /api/v2/metadata/tables - List known tables",
         },
     }
+
+
+@app.get("/api/v2/metadata/tables")
+async def list_tables():
+    """List tables known via metadata (or fallback to memory if needed)."""
+    tables = sorted(list(metadata.table_names))
+    if not tables and vn:
+        tables = sorted(list(get_allowed_tables_from_memory(vn)))
+    return {"tables": tables}
 
 
 if __name__ == "__main__":

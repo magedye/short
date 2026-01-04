@@ -1,0 +1,20 @@
+{
+  "validation": {
+    "require_where_or_limit": true,
+    "allow_joins": true,
+    "allow_subqueries": false,
+    "max_query_length": 5000,
+    "max_rows": 10000,
+    "forbidden_keywords": [
+      "DROP",
+      "DELETE",
+      "TRUNCATE",
+      "ALTER",
+      "INSERT",
+      "UPDATE",
+      "CREATE",
+      "GRANT",
+      "REVOKE"
+    ]
+  }
+}
